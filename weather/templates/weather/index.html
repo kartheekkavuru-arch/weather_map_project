@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Realistic 3D Weather Globe - with Search Suggestions</title>
+    
+    <style>
+        body { margin: 0; padding: 0; background: #050505; overflow: hidden; font-family: Arial, sans-serif; }
+        #globeViz { width: 100vw; height: 100vh; }
+        
+        /* The Left UI panel */
+        .overlay-ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 1000;
+            background: rgba(10, 15, 25, 0.85);
+            color: white;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #4da6ff;
+            backdrop-filter: blur(5px);
+            width: 280px;
+        }
+        h2 { margin: 0 0 10px 0; font-size: 1.1rem; color: #4da6ff; }
+        
+        #spot-data {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #333;
+            font-size: 0.9rem;
+            display: none; 
+        }
+        .data-row { margin-bottom: 8px; line-height: 1.3; }
+        .data-label { color: #888; display: block; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px;}
+        .data-value { font-weight: bold; color: #00ffcc; font-size: 1rem; }
+
+        /* Styling for the red marker */
+        .click-marker {
+            color: #ff3333;
+            font-size: 24px;
+            font-weight: bold;
+            margin-top: -12px; 
+            text-shadow: 0px 0px 5px black;
+            pointer-events: none;
+        }
+
+        /* Top Middle Search Box */
+        .search-wrapper {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .search-container {
+            display: flex;
+            gap: 8px;
+            background: rgba(10, 15, 25, 0.85);
+            padding: 8px;
+            border-radius: 50px; 
+            border: 1px solid #4da6ff;
+            backdrop-filter: blur(5px);
+            box-shadow: 0 4px 15px rgba(0, 255, 204, 0.15);
+        }
+        
+        .search-input {
+            padding: 10px 20px;
+            border-radius: 30px; 
+            border: 1px solid #333;
+            background: #050505;
+            color: white;
+            outline: none;
+            width: 300px;
+            font-size: 1rem;
+        }
+        .search-input:focus {
+            border-color: #00ffcc;
+        }
+        .search-button {
+            padding: 10px 25px;
+            border: none;
+            background: #4da6ff;
+            color: #050505;
+            font-weight: bold;
+            border-radius: 30px; 
+            cursor: pointer;
+            transition: background 0.3s, transform 0.1s;
+            font-size: 1rem;
+        }
+        .search-button:hover { background: #00ffcc; }
+        .search-button:active { transform: scale(0.95); }
+
+        /* NEW: Auto-Complete Dropdown Styles */
+        .suggestions-box {
+            margin-top: 10px;
+            width: 95%;
+            background: rgba(10, 15, 25, 0.95);
+            border: 1px solid #4da6ff;
+            border-radius: 15px;
+            max-height: 250px;
+            overflow-y: auto;
+            display: none; /* Hidden until user types */
+            flex-direction: column;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
+        }
+
+        .suggestion-item {
+            padding: 12px 20px;
+            color: white;
+            cursor: pointer;
+            border-bottom: 1px solid #333;
+            font-size: 0.9rem;
+            line-height: 1.4;
+            transition: background 0.2s;
+        }
+        .suggestion-item:last-child { border-bottom: none; }
+        .suggestion-item:hover { background: rgba(0, 255, 204, 0.2); }
+        .suggestion-main { font-weight: bold; color: #00ffcc; display: block;}
+        .suggestion-sub { font-size: 0.8rem; color: #aaa; }
+
+    </style>
+
+    <script src="https://unpkg.com/three"></script>
+    <script src="https://unpkg.com/globe.gl"></script>
+</head>
+<body>
+
+    <div class="search-wrapper">
+        <div class="search-container">
+            <input type="text" id="search-input" class="search-input" placeholder="Search city, country, or ocean...">
+            <button id="search-button" class="search-button">Search</button>
+        </div>
+        <div id="suggestions" class="suggestions-box"></div>
+    </div>
+
+    <div class="overlay-ui">
+        <h2>Live Global Weather</h2>
+        <p style="font-size: 0.8rem; color: #aaa; margin: 0;">Click the globe or use the search bar to place a pin and load data.</p>
+        
+        <div id="spot-data">
+            <div class="data-row"><span class="data-label">Location:</span> <span class="data-value" id="val-location" style="color: #ffcc00;">--</span></div>
+            <div class="data-row"><span class="data-label">Coordinates:</span> <span class="data-value" id="val-coords">--</span></div>
+            <div class="data-row"><span class="data-label">Wind Speed:</span> <span class="data-value" id="val-wind">--</span></div>
+            <div class="data-row"><span class="data-label">Temperature:</span> <span class="data-value" id="val-temp">--</span></div>
+            <div class="data-row"><span class="data-label">Conditions:</span> <span class="data-value" id="val-cond">--</span></div>
+        </div>
+    </div>
+
+    <div id="globeViz"></div>
+
+    <script>
+        // 1. Generate COHERENT Wind Flow 
+        const N = 6000; 
+        const arcsData = [];
+        for (let i = 0; i < N; i++) {
+            let lat = (Math.random() - 0.5) * 170; 
+            let lng = (Math.random() - 0.5) * 360;
+            let lngDelta = 0;
+            let latDelta = (Math.random() - 0.5) * 2; 
+
+            if (Math.abs(lat) <= 30) { lngDelta = -(Math.random() * 5 + 2); } 
+            else if (Math.abs(lat) > 30 && Math.abs(lat) <= 60) { lngDelta = (Math.random() * 5 + 2); }
+            else { lngDelta = -(Math.random() * 3 + 1); }
+
+            let distToCyclone = Math.sqrt(Math.pow(lat - 15, 2) + Math.pow(lng - 130, 2));
+            if (distToCyclone < 30) {
+                latDelta = -(lng - 130) * 0.2;
+                lngDelta = (lat - 15) * 0.2;
+            }
+
+            arcsData.push({
+                startLat: lat, startLng: lng, endLat: lat + latDelta, endLng: lng + lngDelta,
+                color: ['rgba(0, 255, 150, 0.35)', 'rgba(0, 200, 255, 0.35)'][Math.round(Math.random())]
+            });
+        }
+
+        // 2. Universal Click & Search Function
+        function fetchWeatherData(lat, lng, predefinedName = null) {
+            world.htmlElementsData([{ lat, lng }]);
+            document.getElementById('spot-data').style.display = 'block';
+            document.getElementById('val-coords').innerText = `${lat.toFixed(2)}°, ${lng.toFixed(2)}°`;
+            
+            if (predefinedName) {
+                document.getElementById('val-location').innerText = predefinedName;
+            } else {
+                document.getElementById('val-location').innerText = "Locating...";
+            }
+            
+            document.getElementById('val-wind').innerText = "Loading...";
+            document.getElementById('val-temp').innerText = "Loading...";
+            document.getElementById('val-cond').innerText = "Loading...";
+
+            const myApiKey = 'a789653a54979b820b7bb9637d404731'; 
+
+            // A. Fetch Weather
+            const weatherUrl = `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lng}&appid=${myApiKey}&units=metric`;
+            fetch(weatherUrl)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.cod === 200) {
+                        document.getElementById('val-wind').innerText = `${data.wind.speed} m/s`;
+                        document.getElementById('val-temp').innerText = `${data.main.temp}°C`;
+                        document.getElementById('val-cond').innerText = data.weather[0].description;
+                    } else {
+                        document.getElementById('val-wind').innerText = "N/A";
+                        document.getElementById('val-temp').innerText = "N/A";
+                        document.getElementById('val-cond').innerText = "No specific data.";
+                    }
+                }).catch(err => { document.getElementById('val-cond').innerText = "Error fetching data."; });
+
+            // B. Fetch Geographic Location Name (if clicked manually)
+            if (!predefinedName) {
+                const geoUrl = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=10`;
+                fetch(geoUrl)
+                    .then(response => response.json())
+                    .then(geo => {
+                        let locationName = "Deep Ocean / Unmapped Region";
+                        if (geo && geo.address) {
+                            let parts = [];
+                            if (geo.address.sea) parts.push(geo.address.sea);
+                            if (geo.address.ocean) parts.push(geo.address.ocean);
+                            if (geo.address.city || geo.address.town || geo.address.county) {
+                                parts.push(geo.address.city || geo.address.town || geo.address.county);
+                            }
+                            if (geo.address.state) parts.push(geo.address.state);
+                            if (geo.address.country) parts.push(geo.address.country);
+
+                            parts = [...new Set(parts)].filter(Boolean);
+                            if (parts.length > 0) locationName = parts.slice(0, 3).join(", ");
+                            else if (geo.name) locationName = geo.name;
+                        }
+                        document.getElementById('val-location').innerText = locationName;
+                    }).catch(err => { document.getElementById('val-location').innerText = "Coordinates Only"; });
+            }
+        }
+
+        // 3. Initialize Globe
+        const world = Globe()
+            (document.getElementById('globeViz'))
+            .globeImageUrl('https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg')
+            .bumpImageUrl('https://unpkg.com/three-globe/example/img/earth-topology.png')
+            .arcsData(arcsData)
+            .arcColor('color')
+            .arcDashLength(0.4)               
+            .arcDashGap(0.2)                  
+            .arcDashInitialGap(() => Math.random() * 2) 
+            .arcDashAnimateTime(1500)         
+            .arcStroke(0.15)                  
+            .arcAltitude(0.01)                
+            .onGlobeClick(({ lat, lng }) => fetchWeatherData(lat, lng))
+            .onPolygonClick((polygon, event, { lat, lng }) => fetchWeatherData(lat, lng))
+            .htmlElement(d => {
+                const el = document.createElement('div');
+                el.innerHTML = '📍';
+                el.className = 'click-marker';
+                return el;
+            });
+
+        // 4. ADD BORDERS
+        fetch('https://unpkg.com/world-atlas/countries-110m.json')
+            .then(res => res.json())
+            .then(worldData => {
+                fetch('https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_admin_0_countries.geojson')
+                .then(res => res.json())
+                .then(geoData => {
+                    world.polygonsData(geoData.features)
+                         .polygonCapColor(() => 'rgba(0,0,0,0)') 
+                         .polygonSideColor(() => 'rgba(0,0,0,0)') 
+                         .polygonStrokeColor(() => 'rgba(255,255,255,0.4)'); 
+                });
+            });
+
+        world.controls().autoRotate = true;
+        world.controls().autoRotateSpeed = 0.5;
+        world.camera().position.z = 250;
+
+        // -------------------------------------------------------------
+        // 5. NEW AUTO-COMPLETE SEARCH LOGIC
+        // -------------------------------------------------------------
+        const searchInput = document.getElementById('search-input');
+        const suggestionsBox = document.getElementById('suggestions');
+        let debounceTimer;
+
+        // Execute rotation and fetch weather
+        function executeSearch(lat, lng, fullName) {
+            world.pointOfView({ lat: lat, lng: lng, altitude: 1.5 }, 1500);
+            
+            // Clean up the name for the UI (grab the first 3 parts separated by commas)
+            const cleanName = fullName.split(',').slice(0, 3).join(',');
+            fetchWeatherData(lat, lng, cleanName);
+        }
+
+        // Listen as the user types
+        searchInput.addEventListener('input', function() {
+            clearTimeout(debounceTimer); // Clear the previous timer
+            const query = this.value.trim();
+            
+            if (query.length < 3) {
+                suggestionsBox.style.display = 'none'; // Hide if less than 3 letters
+                return;
+            }
+            
+            // Wait 500ms after the user stops typing before calling the API
+            debounceTimer = setTimeout(() => {
+                // Notice the &limit=5 parameter to get multiple options
+                fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=5`)
+                    .then(res => res.json())
+                    .then(data => {
+                        suggestionsBox.innerHTML = ''; // Clear old results
+                        
+                        if (data.length > 0) {
+                            data.forEach(item => {
+                                const nameParts = item.display_name.split(',');
+                                const mainName = nameParts[0];
+                                const subName = nameParts.slice(1).join(',');
+
+                                const div = document.createElement('div');
+                                div.className = 'suggestion-item';
+                                div.innerHTML = `<span class="suggestion-main">${mainName}</span><span class="suggestion-sub">${subName}</span>`;
+                                
+                                // What happens when they click a specific suggestion
+                                div.onclick = () => {
+                                    searchInput.value = mainName; // Fill input box
+                                    suggestionsBox.style.display = 'none'; // Hide dropdown
+                                    executeSearch(parseFloat(item.lat), parseFloat(item.lon), item.display_name);
+                                };
+                                suggestionsBox.appendChild(div);
+                            });
+                            suggestionsBox.style.display = 'flex'; // Show the dropdown
+                        } else {
+                            suggestionsBox.style.display = 'none'; // Hide if no results
+                        }
+                    })
+                    .catch(err => console.error("Search Error:", err));
+            }, 500); 
+        });
+
+        // Hide dropdown if the user clicks anywhere else on the screen
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('.search-wrapper')) {
+                suggestionsBox.style.display = 'none';
+            }
+        });
+
+        // Trigger the top result if they press Enter or click the Search button manually
+        function triggerFirstResult() {
+            const query = searchInput.value.trim();
+            if (!query) return;
+            
+            document.getElementById('search-button').innerText = "...";
+            
+            fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1`)
+                .then(res => res.json())
+                .then(data => {
+                    document.getElementById('search-button').innerText = "Search";
+                    suggestionsBox.style.display = 'none';
+                    if (data && data.length > 0) {
+                        executeSearch(parseFloat(data[0].lat), parseFloat(data[0].lon), data[0].display_name);
+                    } else {
+                        alert("Location not found. Please try another search.");
+                    }
+                });
+        }
+
+        document.getElementById('search-button').addEventListener('click', triggerFirstResult);
+        searchInput.addEventListener('keypress', function (e) {
+            if (e.key === 'Enter') triggerFirstResult();
+        });
+
+    </script>
+</body>
+</html>
